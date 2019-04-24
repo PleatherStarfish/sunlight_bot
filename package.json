@@ -1,0 +1,25 @@
+{
+  "name": "sunlightbot",
+  "version": "1.0.0",
+  "description": "Nodejs Twitter Bot",
+  "main": "app.js",
+  "scripts": {
+    "start": "node app.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/PleatherStarfish/sunlight_bot.git"
+  },
+  "author": "Brandon Morelli",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/bmorelli25/Twitter-Bot/issues"
+  },
+  "homepage": "https://github.com/PleatherStarfish/sunlight_bot#readme",
+  "dependencies": {
+    "dotenv": "^7.0.0",
+    "pg": "^7.10.0",
+    "twit": "^2.2.11",
+    "twitter": "^1.7.1"
+  }
+}
