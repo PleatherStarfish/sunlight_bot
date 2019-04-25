@@ -4,7 +4,7 @@ function titleCase(str) {
     }).join('');
 }
 
-let formatDepartmentName = function(agency) {
+let formatAgency = function(agency) {
     switch(agency) {
         case 'Agriculture':
         case 'Commerce':
@@ -102,4 +102,4 @@ let formatDepartmentName = function(agency) {
     }
 };
 
-module.exports = formatDepartmentName;
+module.exports = { formatAgency, };
