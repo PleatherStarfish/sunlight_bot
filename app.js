@@ -1,6 +1,7 @@
 // Use dotenv to read .env vars into Node
 require('dotenv').config();
-let formatDepartmentName = require('./formatDepartmentName');
+let tweetBody = require('./formatTweet.js');
+let docs = require('./formatDocs.js');
 
 const Twit = require('twit');
 const pg = require('pg');
@@ -8,6 +9,21 @@ const pg = require('pg');
 const config = require('./config.js');
 
 const T = new Twit(config.twitter);
+
+// !!!!!! IMPORTANT !!!!!!!
+
+// SET THESE BEFORE DEPLOYMENT
+
+const sendTweets    = true;                // @testing = false | @deploy = true
+const sslOn         = false;                // @testing = false | @deploy = true
+let resetNumTweeted = false;               // @testing = false | @deploy = false
+
+// Tweet once every six hours
+// (6 hr. * 60 min. * 60 sec. * 1000 ms.)
+const timeout       = 6 * 60 * 60 * 1000;  // @testing = n/a | @deploy = 6 * 60 * 60 * 1000
+
+const tweetNow      = true;               // @testing = true | @deploy = false
+const autoTweet     = false;                // @testing = false | @deploy = true
 
 function tweeted(err, data, response) {
     if (err) {
@@ -22,68 +38,6 @@ function sendTweet(tweetText) {
     T.post('statuses/update', { status: `${tweetText}` }, tweeted);
 }
 
-const formatter = new Intl.NumberFormat('en-US', {
-    style: 'currency',
-    currency: 'USD',
-});
-
-function formatTweet(person) {
-
-    tweetString += `Trump Administration appointee `;
-
-    if ( person.name && person.position_title_1 && person.position_title_2 && person.position_title_3)
-    {
-        tweetString += `${person.name} has served as ${person.position_title_1}, ${person.position_title_2}, and ${person.position_title_3}`
-    }
-    else if ( person.name && person.position_title_1 && person.position_title_2 )
-    {
-        tweetString += `${person.name} has served as ${person.position_title_1} and ${person.position_title_2}`
-    }
-    else if ( person.name && person.position_title_1 )
-    {
-        tweetString += `${person.name} has served as ${person.position_title_1}`
-    }
-    else {
-        console.error(`formatTweet function input error `, person);
-    }
-
-    tweetString += ` ${formatDepartmentName(person.agency_name)}`;
-
-    let startDate = person.start_date;
-    let parts = startDate.split('-');
-    startDate = new Date(parts[0], parts[1] - 1, parts[2].split(' ')[0]);
-    let dateString = startDate.toDateString();
-    const dateStringArray = dateString.split(' ');
-    if (dateStringArray[1] !== 'May') {
-        dateString = `${dateStringArray[1]}. ${dateStringArray[2]}, ${dateStringArray[3]}`;
-    } else {
-        dateString = `${dateStringArray[1]} ${dateStringArray[2]}, ${dateStringArray[3]}`
-    }
-
-    if (person.start_date) {tweetString += ` since ${dateString}`}
-
-    if (person.grade_level) {tweetString += ` with a salary of ${formatter.format(person.grade_level).slice(0, -3)}`}
-
-    return tweetString;
-}
-
-function formatLinkedIn(person) {
-    return `${person.name} has a profile on LinkedIn which can be found here: ${person.linkedin_url}`;
-}
-
-function formatFinancialDisclosure(person) {
-    return `${person.name}'s financial disclosure form can be found here: ${person.financial_disclosure_url}`;
-}
-
-function formatResume(person) {
-    return `${person.name}'s resume can be found here: ${person.resume_document_url}`;
-}
-
-function formatEthicsWaiver(person) {
-    return `${person.name}'s ethics waiver can be found here: ${person.ethics_waiver_url}. (An ethics waiver allows 
-    appointees to bypass anti-nepotism rules against working with former colleagues or clients.)`;
-}
-
 let pgClient = null;
 
 const randomRow = 'SELECT * FROM staffers WHERE end_date IS NULL ' +
@@ -94,10 +48,9 @@ const randomRow = 'SELECT * FROM staffers WHERE end_date IS NULL ' +
     'AND num_times_tweeted = ( SELECT MIN (num_times_tweeted) FROM staffers )' + // select from among the untweeted
     'ORDER BY random() limit 1';
 
-const updateTweeted =  'UPDATE staffers SET num_times_tweeted=num_times_tweeted + 1 WHERE id=800';
-
-let stafferInfo = {};
-let tweetString = '';
+let stafferInfo     = {};
+let tweetString     = '';
+let idOfTweeted     = 0;
 
 function tweeter() {
 
@@ -106,66 +59,96 @@ function tweeter() {
 
     let pool = new pg.Pool({
         connectionString: process.env.DATABASE_URL,
-        ssl: true
+        ssl: sslOn
     } || config.db);
 
     pool.connect()
 
+        // (1) GET INFO FROM DB AND SET VARIABLE
         .then(client => {
             pgClient = client;
             return pgClient.query(randomRow)
                 .then(res => {
-                    stafferInfo = res.rows[0];   // (1) GET INFO FROM DB AND SET VARIABLE
+                    stafferInfo = res.rows[0];
+                    idOfTweeted = res.rows[0].id;
                     // console.log(stafferInfo);
-
                 })
                 .catch(err => console.error('Error executing first psql query', err.stack));
         })
 
+        // (2) RESET "TWEETED" COUNT - RUNS ONLY THE FIRST TIME THE FUNCTION IS CALLED
         .then(() => {
-            return pgClient.query(updateTweeted) // (2) UPDATE "TWEETED" COUNT
+            if (resetNumTweeted) {
+                return pgClient.query('UPDATE staffers SET num_times_tweeted=0')
+                    .then(res => {
+                        // console.log(res);
+                    })
+                    .catch(err => console.error('Error resetting num_times_tweeted', err.stack));
+            }
+        })
+
+        // (3) UPDATE "TWEETED" COUNT of SELECTED
+        .then(() => {
+            return pgClient.query('UPDATE staffers SET num_times_tweeted=num_times_tweeted+1 WHERE id=' + idOfTweeted)
                 .then(res => {
                     // console.log(res);
                 })
-                .catch(err => console.error('Error executing second psql query', err.stack));
+                .catch(err => console.error('Error updating tweeted count', err.stack));
         })
-        .then(() => {                       // (3) POST TWEET
-            tweetString = formatTweet(stafferInfo);
+
+        // (4) FOR TESTING - CHECK IF num_times_tweeted IS UPDATED
+        .then(() => {
+            return pgClient.query('SELECT * FROM staffers WHERE id=' + idOfTweeted)
+                .then(res => {
+                    // console.log("test: ", res.rows[0]);
+                })
+                .catch(err => console.error('Error updating tweeted count', err.stack));
+        })
+
+        // (5) POST TWEET
+        .then(() => {
+
+            tweetString = tweetBody.formatText(stafferInfo, tweetString);
 
             if ((`${tweetString} (data from ProPublica's Trump Town dataset)`).length <= (280)) {
-                tweetString += ` (data from ProPublica's Trump Town dataset)`
+                tweetString += ` (data from ProPublica's Trump Town dataset)`;
+                console.log(tweetString);
+                if (sendTweets) { sendTweet(tweetString); }
             }
             else if (tweetString.length <= 280) {
-
                 console.log(tweetString);
-
-                sendTweet(tweetString);
-
-                if (stafferInfo.linkedin_url) {
-                    console.log(formatLinkedIn(stafferInfo));
-                    sendTweet(formatLinkedIn(stafferInfo));
-                }
-                if (stafferInfo.resume_document_url) {
-                    console.log(formatResume(stafferInfo));
-                    sendTweet(formatResume(stafferInfo));
-                }
-                if (stafferInfo.financial_disclosure_url) {
-                    console.log(formatFinancialDisclosure(stafferInfo));
-                    sendTweet(formatFinancialDisclosure(stafferInfo));
-                }
-                if (stafferInfo.ethics_waiver_url) {
-                    console.log(formatEthicsWaiver(stafferInfo));
-                    sendTweet(formatEthicsWaiver(stafferInfo));
-                }
+                if (sendTweets) { sendTweet(tweetString); }
             }
             else {
                 console.log(`Tweet is longer than 280 characters: ${tweetString}`);
             }
+
+            if (stafferInfo.linkedin_url) {
+                console.log(docs.formatLinkedIn(stafferInfo));
+                if (sendTweets) { sendTweet(docs.formatLinkedIn(stafferInfo)); }
+            }
+            if (stafferInfo.resume_document_url) {
+                console.log(docs.formatResume(stafferInfo));
+                if (sendTweets) { sendTweet(docs.formatResume(stafferInfo)); }
+            }
+            if (stafferInfo.financial_disclosure_url) {
+                console.log(docs.formatFinancialDisclosure(stafferInfo));
+                if (sendTweets) { sendTweet(docs.formatFinancialDisclosure(stafferInfo)); }
+            }
+            if (stafferInfo.ethics_waiver_url) {
+                console.log(docs.formatEthicsWaiver(stafferInfo));
+                if (sendTweets) { sendTweet(docs.formatEthicsWaiver(stafferInfo)); }
+            }
         })
+
+        // IF ERROR THROW TO CONSOLE
         .catch(err => {
-            console.error('Error acquiring client: ', err.stack);  // IF ERROR THROW TO CONSOLE
+            console.error('Error acquiring client: ', err.stack);
         })
-        .finally(() => {                                // EITHER WAY SHUT DOWN CLIENT & POOL AFTER
+
+        // EITHER WAY SHUT DOWN CLIENT & POOL AFTER
+        .finally(() => {
+            resetNumTweeted = false; // we don't want to reset the numTweeted column after the first run
             if (pgClient) {
                 pgClient.release();
             }
@@ -173,6 +156,12 @@ function tweeter() {
         });
 }
 
-// tweeter(); // For testing
+// For testing
+if (tweetNow) {
+    tweeter();
+}
 
-setInterval(tweeter, 6*60*60*1000); // Tweet once every six hours (6 hr. * 60 min. * 60 sec. * 1000 ms.)
+// To setup bot for deployment
+if (autoTweet) {
+    setInterval(tweeter, timeout);
+}
